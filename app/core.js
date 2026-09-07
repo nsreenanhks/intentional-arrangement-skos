@@ -51,6 +51,8 @@ function conceptRes(model, id){ const c = model.concepts && model.concepts[id]; 
 function emptyConcept(id){
   return { id, notation: "", pref: [], alt: [], hidden: [],
     definition: [], scopeNote: [], changeNote: [], historyNote: [], editorialNote: [], example: [],
+    // lifecycle: owl:deprecated + dcterms:isReplacedBy successor concept ids
+    deprecated: false, isReplacedBy: [],
     broader: [], related: [],
     broaderGeneric: [], broaderPartitive: [], broaderInstantial: [],
     rdfsLabel: [], comment: [], source: [],
@@ -157,6 +159,17 @@ function buildTriples(model, opts){
         add(iri(schemeUri), iri(NS.skos + "hasTopConcept"), s);
       } }
     if (c.notation) add(s, iri(NS.skos + "notation"), lit(c.notation, "", NS.xsd + "string"));
+    // lifecycle: owl:deprecated is the machine-readable retirement signal;
+    // dcterms:isReplacedBy names the successor concept(s). A deprecated concept
+    // keeps its URI and scheme membership — consumers filter it at display time
+    // (scheme-metadata.md). Emitted unconditionally: this is core semantics, not
+    // optional Dublin Core annotation.
+    if (c.deprecated){
+      add(s, iri(NS.owl + "deprecated"), lit("true", "", NS.xsd + "boolean"));
+      (c.isReplacedBy || []).forEach(rid => {
+        if (model.concepts[rid]) add(s, iri(NS.dcterms + "isReplacedBy"), iri(conceptRes(model, rid)));
+      });
+    }
 
     // labels
     for (const kind of LABEL_FIELDS){
@@ -248,13 +261,18 @@ function buildTriples(model, opts){
         if (ci && !c.created) add(s, iri(NS.dcterms + "created"), lit(ci, "", NS.xsd + "dateTime"));
         if (mi && !c.modified) add(s, iri(NS.dcterms + "modified"), lit(mi, "", NS.xsd + "dateTime"));
       }
-      // each history entry → one skos:changeNote (date — what changed; by whom)
+      // each history entry → one skos:changeNote (date — what changed; by whom).
+      // Tag with the scheme's default language so editor-generated notes match the
+      // manually-added ones (which inherit model.defaultLang) — #71: change notes
+      // were inconsistently tagged because these history-derived ones went out
+      // untagged while manual ones carried @lang.
+      const noteLang = (model.scheme && model.scheme.lang) || model.defaultLang || "";
       c.history.forEach(h => {
         const changes = (h.changes || []).filter(Boolean).join("; ");
         if (!changes) return;
         const when = h.ts ? (isoDateTime(h.ts) || "").slice(0, 10) : "";
         const who = h.author ? " (by " + h.author + ")" : "";
-        add(s, iri(NS.skos + "changeNote"), lit((when ? when + " — " : "") + changes + who, ""));
+        add(s, iri(NS.skos + "changeNote"), lit((when ? when + " — " : "") + changes + who, noteLang));
       });
     }
   }
@@ -438,7 +456,7 @@ function toRdfXml(model, opts){
 // ============================================================================
 function toJsonLd(model, opts){
   const { triples } = (opts && opts._triples) ? { triples: opts._triples } : buildTriples(model, opts);
-  const ctx = {}; for (const p of ["skos", "skosxl", "rdf", "rdfs", "dcterms", "xsd"]) ctx[p] = NS[p];
+  const ctx = {}; for (const p of ["skos", "skosxl", "rdf", "rdfs", "dcterms", "owl", "xsd"]) ctx[p] = NS[p];
   if (model.prefix) ctx[model.prefix] = model.base;
   const _actx = annexNs(model), _dctx = annexNs(model, "doc");
   if (_actx) ctx.agents = _actx;
@@ -479,7 +497,8 @@ function csvCell(s){ s = String(s == null ? "" : s); return /[",\n\r]/.test(s) ?
 function modelToGrid(model){
   const cols = ["id","uri","prefLabel","altLabel","hiddenLabel","definition","scopeNote",
     "changeNote","historyNote","editorialNote","example","notation",
-    "broader","related","exactMatch","closeMatch","broadMatch","narrowMatch","relatedMatch","artifacts","topConcept"];
+    "broader","related","exactMatch","closeMatch","broadMatch","narrowMatch","relatedMatch","artifacts","topConcept",
+    "deprecated","isReplacedBy"];
   const fmt = arr => (arr || []).map(l => l.lang ? l.val + "@" + l.lang : l.val).join(" | ");
   const fmtArt = arr => (arr || []).map(a => (a.title || "(untitled)") + " [" + (a.type || "link") + "] " + (a.url || "")).join(" | ");
   const ids = model.order && model.order.length ? model.order : Object.keys(model.concepts);
@@ -490,7 +509,8 @@ function modelToGrid(model){
       fmt(c.changeNote), fmt(c.historyNote), fmt(c.editorialNote), fmt(c.example),
       c.notation || "", (c.broader || []).join(" | "), (c.related || []).join(" | "),
       (c.exactMatch || []).join(" | "), (c.closeMatch || []).join(" | "), (c.broadMatch || []).join(" | "),
-      (c.narrowMatch || []).join(" | "), (c.relatedMatch || []).join(" | "), fmtArt(c.artifacts), c.top ? "yes" : "" ]);
+      (c.narrowMatch || []).join(" | "), (c.relatedMatch || []).join(" | "), fmtArt(c.artifacts), c.top ? "yes" : "",
+      c.deprecated ? "yes" : "", (c.isReplacedBy || []).join(" | ") ]);
   }
   return grid;
 }
@@ -552,6 +572,8 @@ function gridToModel(grid, opts){
     exactmatch:"exactMatch", closematch:"closeMatch", broadmatch:"broadMatch",
     narrowmatch:"narrowMatch", relatedmatch:"relatedMatch",
     topconcept:"top", top:"top", istop:"top",
+    deprecated:"deprecated", deprecate:"deprecated", retired:"deprecated", obsolete:"deprecated",
+    isreplacedby:"isReplacedBy", replacedby:"isReplacedBy", replacement:"isReplacedBy", successor:"isReplacedBy",
     lang:"lang", language:"lang", languagetag:"lang", "@lang":"lang", locale:"lang"
   };
   const colOf = {};
@@ -597,9 +619,10 @@ function gridToModel(grid, opts){
     const nota = cell(r, "notation").trim(); if (nota) cpt.notation = nota;
     ["exactMatch","closeMatch","broadMatch","narrowMatch","relatedMatch"].forEach(k => splitRef(cell(r, k)).forEach(v => cpt[k].push(v)));
     const topv = cell(r, "top").trim().toLowerCase(); if (["yes","y","true","1","x","top"].includes(topv)) cpt.top = true;
+    const depv = cell(r, "deprecated").trim().toLowerCase(); if (["yes","y","true","1","x"].includes(depv)) cpt.deprecated = true;
     model.concepts[id] = cpt; model.order.push(id);
     (cpt.pref || []).forEach(l => { if (l.val) labelToId[l.val.trim().toLowerCase()] = id; });
-    pending.push({ id, b: splitRef(cell(r, "broader")), n: splitRef(cell(r, "narrower")), rel: splitRef(cell(r, "related")) });
+    pending.push({ id, b: splitRef(cell(r, "broader")), n: splitRef(cell(r, "narrower")), rel: splitRef(cell(r, "related")), repl: splitRef(cell(r, "isReplacedBy")) });
   }
   let stubs = 0;
   const resolve = ref => {
@@ -616,6 +639,7 @@ function gridToModel(grid, opts){
     for (const ref of p.b){ const pid = resolve(ref); if (pid && pid !== p.id && !cpt.broader.includes(pid)) cpt.broader.push(pid); }
     for (const ref of p.n){ const cid = resolve(ref); if (cid && cid !== p.id){ const ch = model.concepts[cid]; if (ch && !ch.broader.includes(p.id)) ch.broader.push(p.id); } }
     for (const ref of p.rel){ const rid = resolve(ref); if (rid && rid !== p.id && !cpt.related.includes(rid)) cpt.related.push(rid); }
+    for (const ref of (p.repl || [])){ const sid = resolve(ref); if (sid && sid !== p.id){ cpt.isReplacedBy = cpt.isReplacedBy || []; if (!cpt.isReplacedBy.includes(sid)) cpt.isReplacedBy.push(sid); } }
   }
   for (const id of model.order){ const cpt = model.concepts[id]; if (!cpt.broader.length) cpt.top = true; }
   model._importStubs = stubs;
@@ -830,6 +854,61 @@ function toMarkdown(model){
 }
 
 // ============================================================================
+// Change log — a consumer-facing Markdown changelog aggregated from the recorded
+// per-concept edit history (Keep a Changelog style: Added / Changed / Deprecated
+// / Removed), plus a snapshot of currently deprecated concepts and their
+// successors. Release-over-release diffs need a version tag per published release
+// in source control; this reports the changes recorded in the working vocabulary.
+// ============================================================================
+function toChangelog(model){
+  const ids = model.order && model.order.length ? model.order : Object.keys(model.concepts);
+  const dl = model.defaultLang || "en";
+  const plab = c => { const p = (c.pref || []).find(l => l.lang === dl && l.val) || (c.pref || []).find(l => l.val); return p ? p.val : (c.id || "(untitled)"); };
+  const s = model.scheme || {};
+  const dayOf = ts => { try { return new Date(ts).toISOString().slice(0, 10); } catch (e) { return ""; } };
+  // classify a recorded change string into a Keep-a-Changelog section
+  const bucketOf = txt => {
+    if (/deprecat/i.test(txt)) return "Deprecated";
+    if (/\b(added|created)\b/i.test(txt)) return "Added";
+    if (/\bremoved\b/i.test(txt)) return "Removed";
+    return "Changed";
+  };
+  const rows = [];
+  for (const id of ids){ const c = model.concepts[id]; if (!c) continue;
+    (c.history || []).forEach(h => (h.changes || []).filter(Boolean).forEach(txt => {
+      rows.push({ day: dayOf(h.ts), concept: plab(c), txt, bucket: bucketOf(txt), author: h.author || "" });
+    }));
+  }
+  const title = s.title || "Vocabulary";
+  let out = "# Changelog — " + title + "\n\n";
+  out += "All notable changes to this concept scheme. Format based on ";
+  out += "[Keep a Changelog](https://keepachangelog.com); versions follow the scheme's `owl:versionInfo`.\n\n";
+  const latestDay = rows.map(r => r.day).filter(Boolean).sort().reverse()[0] || "";
+  out += "## " + (s.version ? "[" + s.version + "]" : "Unreleased") + (latestDay ? " — " + latestDay : "") + "\n\n";
+  const ORDER = ["Added", "Changed", "Deprecated", "Removed"];
+  const dep = ids.map(id => model.concepts[id]).filter(c => c && c.deprecated);
+  if (!rows.length && !dep.length) out += "_No changes recorded yet. Use **Save changes** on a concept to record history entries._\n\n";
+  for (const b of ORDER){
+    const items = rows.filter(r => r.bucket === b);
+    if (!items.length) continue;
+    items.sort((a, z) => (z.day || "").localeCompare(a.day || ""));
+    out += "### " + b + "\n";
+    items.forEach(r => { out += "- **" + r.concept + "** — " + r.txt + (r.day ? " _(" + r.day + ")_" : "") + (r.author ? " · " + r.author : "") + "\n"; });
+    out += "\n";
+  }
+  if (dep.length){
+    out += "### Deprecated concepts (current state)\n";
+    dep.forEach(c => {
+      const repl = (c.isReplacedBy || []).filter(rid => model.concepts[rid]).map(rid => plab(model.concepts[rid]));
+      out += "- **" + plab(c) + "** `" + conceptRes(model, c.id) + "`" + (repl.length ? " → replaced by " + repl.join(", ") : " (no successor recorded)") + "\n";
+    });
+    out += "\n";
+  }
+  out += "---\n_Generated from recorded edit history. For release-over-release diffs, tag each published version in source control._\n";
+  return out;
+}
+
+// ============================================================================
 // RDF/JSON (W3C Working Group Note) — { subject: { predicate: [ objectNode ] } }
 // ============================================================================
 function toRdfJson(model, opts){
@@ -996,6 +1075,18 @@ function validate(model){
     if (c.top && (c.broader || []).length)
       push("warning", "topWithBroader", "Top concept has broader",
         `Marked as a top concept but also has skos:broader.`, id);
+
+    // 10 deprecation hygiene: a retired concept should not remain a scheme entry
+    // point, and successor pointers must resolve. A deprecated concept with live
+    // children but no successor leaves consumers of the old term nowhere to go.
+    if (c.deprecated){
+      if (c.top) push("warning", "deprecatedTop", "Deprecated top concept",
+        `Marked deprecated but still a top concept — it stays a scheme entry point. Unmark top, or reinstate it.`, id);
+      for (const rid of (c.isReplacedBy || [])) if (!C[rid]) push("error", "danglingReplacedBy", "Dangling successor",
+        `dcterms:isReplacedBy points to unknown concept "${rid}".`, id);
+      if (hasNarrower && !(c.isReplacedBy || []).length) push("info", "deprecatedNoSuccessor", "Deprecated without successor",
+        `Deprecated concept has narrower concepts but no dcterms:isReplacedBy — record what replaces it so consumers can migrate.`, id);
+    }
 
     // 15 reflexive relations
     if ((c.broader || []).includes(id)) push("error", "selfBroader", "Self-referential hierarchy",
@@ -1436,6 +1527,11 @@ function triplesToModel(triples, prefixes){
     else if (pv === NS.dcterms + "created" && o.t === "lit"){ const c = ensure(s); if (c) c.created = dateOnly(o.v); }
     else if (pv === NS.dcterms + "issued" && o.t === "lit"){ const c = ensure(s); if (c) c.issued = dateOnly(o.v); }
     else if (pv === NS.dcterms + "modified" && o.t === "lit"){ const c = ensure(s); if (c) c.modified = dateOnly(o.v); }
+    // lifecycle → first-class fields (else they'd fall into the passthrough and
+    // double-emit once the exporter writes them). owl:deprecated is a boolean;
+    // dcterms:isReplacedBy names a successor concept (same id resolution as broader).
+    else if (pv === NS.owl + "deprecated" && o.t === "lit"){ const c = ensure(s); if (c) c.deprecated = /^(true|1)$/i.test(String(o.v).trim()); }
+    else if (pv === NS.dcterms + "isReplacedBy" && o.t === "iri"){ const c = ensure(s), rc = ensure(o.v); if (c && rc){ const rid = idOf(o.v); c.isReplacedBy = c.isReplacedBy || []; if (!c.isReplacedBy.includes(rid)) c.isReplacedBy.push(rid); } }
     // skos:inScheme is re-derived on export (single-scheme editor); consume it here so
     // the passthrough below doesn't duplicate what the exporter already emits.
     else if (pv === P + "inScheme"){ const c = ensure(s);
@@ -1987,6 +2083,6 @@ function termStr(t){
   return s;
 }
 
-root.Core = { NS, iri, lit, termId, emptyConcept, conceptUri, conceptRes, xlLabelUri, buildTriples, toTurtle, toRdfXml, toJsonLd, toCsv, toMarkdown, toRdfJson, toAuditCsv, validate, autofix, parseTurtle, parseTriples, parseRdfXml, triplesToModel, sparql, termStr, safeLocal, parseCsvText, csvToModel, gridToModel, gridToCsv, looksLikeCsv, parseXlsx, csvTemplate, modelToGrid, toXlsx, ISO_BROADER, ISO_INVERSE, ISO_ENTAILS_SKOS };
+root.Core = { NS, iri, lit, termId, emptyConcept, conceptUri, conceptRes, xlLabelUri, buildTriples, toTurtle, toRdfXml, toJsonLd, toCsv, toMarkdown, toChangelog, toRdfJson, toAuditCsv, validate, autofix, parseTurtle, parseTriples, parseRdfXml, triplesToModel, sparql, termStr, safeLocal, parseCsvText, csvToModel, gridToModel, gridToCsv, looksLikeCsv, parseXlsx, csvTemplate, modelToGrid, toXlsx, ISO_BROADER, ISO_INVERSE, ISO_ENTAILS_SKOS };
 
 })(typeof window !== "undefined" ? window : this);

@@ -1117,6 +1117,7 @@
           <label><input type="radio" name="fmt" value="xlsx"><span>Excel</span></label>
           <label><input type="radio" name="fmt" value="rdfjson"><span>RDF/JSON</span></label>
           <label><input type="radio" name="fmt" value="markdown"><span>Markdown</span></label>
+          <label><input type="radio" name="fmt" value="changelog"><span>Change log</span></label>
         </div></div>
         <div class="optset"><span class="h">Labeling</span><div class="radios" id="expLabel">
           <label><input type="radio" name="lbl" value="plain" checked><span>Plain SKOS</span></label>
@@ -1915,6 +1916,8 @@ function diffConcept(base, cur){
     c.filter(x=>!b.includes(x)).forEach(x=>ch.push(`${name} “${plabel(x)}” added`));
     b.filter(x=>!c.includes(x)).forEach(x=>ch.push(`${name} “${model.concepts[x]?plabel(x):x}” removed`)); };
   relDiff("broader","Parent"); relDiff("related","Related term");
+  if(!!base.deprecated!==!!cur.deprecated) ch.push(cur.deprecated?"Deprecated":"Reinstated (un-deprecated)");
+  relDiff("isReplacedBy","Replaced by");
   ["exactMatch","closeMatch","broadMatch","narrowMatch","relatedMatch"].forEach(m=>{ const b=base[m]||[],c=cur[m]||[];
     c.filter(x=>x&&!b.includes(x)).forEach(x=>ch.push(`${m} ${x} added`)); b.filter(x=>x&&!c.includes(x)).forEach(x=>ch.push(`${m} ${x} removed`)); });
   const bu=(base.artifacts||[]).filter(a=>a.url), cu=(cur.artifacts||[]).filter(a=>a.url);
@@ -2021,6 +2024,8 @@ function renderEditor(){
   }
   host.appendChild(relGroup("Related", c, "related"));
   host.appendChild(mapGroup(c));
+  host.appendChild(statusGroup(c));
+  if(c.deprecated) host.appendChild(relGroup("Replaced by — successor concepts (dcterms:isReplacedBy)", c, "isReplacedBy"));
   // collections this concept belongs to (#68) — the way back from Build to the
   // Collections editor; derived from the model, no extension property needed
   { const _cs=(typeof colls==="function")?colls():(model.collections||{});
@@ -2039,6 +2044,20 @@ function renderEditor(){
   host.appendChild(artifactGroup(c));
   host.appendChild(historyGroup(c));
   updateSaveState();
+}
+function statusGroup(c){
+  const g=document.createElement("div"); g.className="grp";
+  const l=document.createElement("div"); l.className="lbl"; l.textContent="Lifecycle status"; g.appendChild(l);
+  const dep=document.createElement("label"); dep.className="toggle"; dep.style.paddingTop="2px";
+  const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!c.deprecated;
+  cb.onchange=()=>{ c.deprecated=cb.checked; if(c.deprecated&&!c.modified) c.modified=todayISO(); save(); renderTree(); renderEditor(); afterChange();
+    toast(c.deprecated?"Marked deprecated — record what replaces it below":"Reinstated"); };
+  dep.appendChild(cb); dep.appendChild(document.createTextNode(" Deprecated (owl:deprecated)"));
+  g.appendChild(dep);
+  const hint=document.createElement("div"); hint.className="subtle"; hint.style.cssText="font-size:11.5px;margin:3px 0 2px";
+  hint.textContent="A deprecated concept keeps its URI and stays in the scheme so existing references don't break; consumers filter it at display time. Name its successor(s) below and add a change note explaining the retirement.";
+  g.appendChild(hint);
+  return g;
 }
 function metaGroup(c){
   const g=document.createElement("div"); g.className="grp";
@@ -2948,20 +2967,22 @@ function renderExport(){
   else if(fmt==="xlsx"){ text=Core.toCsv(model); mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; ext="xlsx"; }
   else if(fmt==="rdfjson"){ text=Core.toRdfJson(model,opts); mime="application/rdf+json"; ext="rj"; }
   else if(fmt==="markdown"){ text=Core.toMarkdown(model); mime="text/markdown"; ext="md"; }
+  else if(fmt==="changelog"){ text=Core.toChangelog(model); mime="text/markdown"; ext="md"; }
   else { text=Core.toRdfXml(model,opts); mime="application/rdf+xml"; ext="rdf"; }
   $('#expCode').textContent=text;
   const n=model.order.length;
   $('#expMeta').textContent = ext==="xlsx"
     ? `${n} concepts · Excel workbook (preview shown as CSV) · XLSX`
     : `${n} concepts · ${text.split("\n").length} lines · ${fmt.toUpperCase()}`;
-  window._export={text,mime,ext};
+  window._export={text,mime,ext,fmt};
 }
 $$('#expFormat input, #expLabel input').forEach(r=>r.onchange=renderExport);
 $('#expDc').onchange=renderExport;
 if($('#expRlabel')) $('#expRlabel').onchange=renderExport;
 $('#expCopy').onclick=()=>{ copyText(window._export.text); };
-$('#expDownload').onclick=async ()=>{ const {text,mime,ext}=window._export;
+$('#expDownload').onclick=async ()=>{ const {text,mime,ext,fmt}=window._export;
   const slug=(model.scheme.title||"taxonomy").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")||"taxonomy";
+  if(fmt==="changelog"){ downloadFile("CHANGELOG.md", text, mime); toast("Downloaded CHANGELOG.md"); return; }
   if(ext==="xlsx"){ try{ const blob=await Core.toXlsx(model); downloadBlob(slug+".xlsx", blob); toast("Downloaded "+slug+".xlsx"); }catch(e){ toast("Excel export failed: "+e.message); } return; }
   downloadFile(slug+"."+ext, text, mime); toast("Downloaded "+slug+"."+ext); };
 
@@ -2983,6 +3004,9 @@ const CHECK_DOC={
   redundancy:"qSKOS Hierarchical Redundancy: a broader link already implied by another path.",
   components:"qSKOS Disconnected Concept Clusters: the vocabulary splits into unconnected components.",
   valuelessAssoc:"qSKOS Valueless Associative Relations: related concepts that also share a parent.",
+  deprecatedTop:"A deprecated concept should not remain a top concept / scheme entry point.",
+  danglingReplacedBy:"dcterms:isReplacedBy points to a concept that does not exist.",
+  deprecatedNoSuccessor:"A deprecated concept with narrower concepts should record a successor (dcterms:isReplacedBy) so consumers can migrate.",
 };
 // #61: the validation report as a downloadable Markdown work list — checkbox
 // items grouped by severity and check, so fixes can be worked through without
