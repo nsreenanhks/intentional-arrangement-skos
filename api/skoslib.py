@@ -8,9 +8,12 @@ skoslib — the shared SKOS engine behind both the REST API and the MCP server.
 Pure functions over rdflib + pySHACL, no web framework and no MCP imports, so
 the exact same validation and conversion logic backs every interface.
 """
+import logging
 import os
 from rdflib import Graph, RDF
 from rdflib.namespace import SKOS
+
+log = logging.getLogger("iaskos.skoslib")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHAPES = os.path.join(HERE, "skos-shapes.ttl")
@@ -119,9 +122,12 @@ def validate_rdf(data, hint=None):
     except ImportError:
         report["shacl_conforms"] = None
         report["shacl_report"] = "pySHACL not installed — run: pip install pyshacl"
-    except Exception as e:
+    except Exception:
+        # Log the detail server-side; the report is returned to HTTP clients, so
+        # it must not carry exception/stack text (code-scanning: py/stack-trace-exposure).
+        log.exception("SHACL validation failed")
         report["shacl_conforms"] = None
-        report["shacl_report"] = f"SHACL error: {e}"
+        report["shacl_report"] = "SHACL validation could not be completed for this input."
     findings, profile = structural_findings(g)
     report["structural_findings"] = findings
     report["profile"] = profile
