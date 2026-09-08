@@ -146,6 +146,12 @@ function buildTriples(model, opts){
     (model.scheme.extra || []).forEach(e => { if (e && e.p && e.o) add(s, iri(e.p), e.o.t === "iri" ? iri(e.o.v) : lit(e.o.v || "", e.o.lang || "", e.o.dt || "")); });
   }
 
+  // Default language for untagged annotation literals — the scheme's declared
+  // language, else the workspace default. Applied as a fallback on export so a
+  // note that carries no tag (e.g. imported from an older untagged export) still
+  // serializes as @<lang> instead of a bare literal (#71 follow-up). Never
+  // overrides an existing tag, and does nothing when no default language is known.
+  const defLang = (model.scheme && model.scheme.lang) || model.defaultLang || "";
   const ids = model.order && model.order.length ? model.order : Object.keys(model.concepts);
   for (const id of ids){
     const c = model.concepts[id]; if (!c) continue;
@@ -189,9 +195,9 @@ function buildTriples(model, opts){
         } else { plain(); mirror(); }
       });
     }
-    // documentation
+    // documentation — untagged notes fall back to the scheme default language (#71)
     for (const kind of NOTE_FIELDS)
-      (c[kind] || []).forEach(L => { if (L.val) add(s, iri(NS.skos + kind), lit(L.val, L.lang)); });
+      (c[kind] || []).forEach(L => { if (L.val) add(s, iri(NS.skos + kind), lit(L.val, L.lang || defLang)); });
     // rdfs:label (optional alternate name) + rdfs:comment
     (c.rdfsLabel || []).forEach(L => { if (L.val) add(s, iri(NS.rdfs + "label"), lit(L.val, L.lang)); });
     (c.comment || []).forEach(L => { if (L.val) add(s, iri(NS.rdfs + "comment"), lit(L.val, L.lang)); });
@@ -262,17 +268,14 @@ function buildTriples(model, opts){
         if (mi && !c.modified) add(s, iri(NS.dcterms + "modified"), lit(mi, "", NS.xsd + "dateTime"));
       }
       // each history entry → one skos:changeNote (date — what changed; by whom).
-      // Tag with the scheme's default language so editor-generated notes match the
-      // manually-added ones (which inherit model.defaultLang) — #71: change notes
-      // were inconsistently tagged because these history-derived ones went out
-      // untagged while manual ones carried @lang.
-      const noteLang = (model.scheme && model.scheme.lang) || model.defaultLang || "";
+      // Tag with the scheme's default language (defLang) so editor-generated
+      // notes match the manually-added and imported ones — #71.
       c.history.forEach(h => {
         const changes = (h.changes || []).filter(Boolean).join("; ");
         if (!changes) return;
         const when = h.ts ? (isoDateTime(h.ts) || "").slice(0, 10) : "";
         const who = h.author ? " (by " + h.author + ")" : "";
-        add(s, iri(NS.skos + "changeNote"), lit((when ? when + " — " : "") + changes + who, noteLang));
+        add(s, iri(NS.skos + "changeNote"), lit((when ? when + " — " : "") + changes + who, defLang));
       });
     }
   }
