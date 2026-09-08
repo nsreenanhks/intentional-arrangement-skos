@@ -1236,6 +1236,10 @@ function parseTurtle(text){ const { triples, prefixes } = parseTriples(text); re
 function parseRdfXml(text){
   const RDF = NS.rdf, XMLNS = "http://www.w3.org/XML/1998/namespace";
   const triples = [], prefixes = {};
+  // Entity-expansion guard (code-scanning: js/xml-bomb). RDF/XML has no need for a
+  // DOCTYPE, and that is the only place XML entities can be declared — reject it up
+  // front so a "billion laughs" payload can never reach the parser.
+  if (/<!DOCTYPE/i.test(text)) throw new Error("RDF/XML with a DOCTYPE declaration is not supported.");
   const doc = new DOMParser().parseFromString(text.replace(/^[\s﻿]+/, ""), "application/xml");
   const err = doc.getElementsByTagName("parsererror");
   if (err && err.length) throw new Error("RDF/XML parse error: " + (err[0].textContent || "").replace(/\s+/g, " ").trim().slice(0, 160));

@@ -2480,7 +2480,7 @@ function renderCorpTable(){
     if($('#corpResMeta')) $('#corpResMeta').textContent = $('#corpResMeta').textContent.replace(/\d+ checked/, corpChecked.size+" checked");
   });
 }
-function escHtml(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function escHtml(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function escAttr(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 function renderCorpDocs(){
@@ -2876,7 +2876,7 @@ if($('#xwTarget')){
     const cur=sc.value;
     sc.innerHTML=[
       `<option value="map" ${!pair?"disabled":""}>Mappings only — ${pair?n+" links":"pick a pair"}</option>`,
-      `<option value="pair" ${!pair?"disabled":""}>This pair as one thesaurus — ${pair?(A+" + "+B):"pick a pair"}</option>`,
+      `<option value="pair" ${!pair?"disabled":""}>This pair as one thesaurus — ${pair?(escapeHtml(A)+" + "+escapeHtml(B)):"pick a pair"}</option>`,
       `<option value="fed">Whole federation — ${fed.length} taxonomies</option>`].join("");
     sc.value=cur&&[...sc.options].some(o=>o.value===cur&&!o.disabled)?cur:(pair?"pair":"fed");
     const xl=$('#xwXl'); if(xl&&!xl.dataset.touched) xl.checked=!!((xwSourceModel&&xwSourceModel.xlLabels)||(xwTargetModel&&xwTargetModel.xlLabels));
@@ -5394,7 +5394,7 @@ function buildNavContents(){
   const curEl=document.querySelector('#tabs .tab.active'); const cur=curEl?curEl.getAttribute('data-tab'):'';
   const tabs=[...document.querySelectorAll('#tabs .tab')].map(t=>{ const c=t.cloneNode(true); c.querySelectorAll('.pill').forEach(p=>p.remove()); return {name:t.getAttribute('data-tab'), label:c.textContent.trim()}; });
   let h='<div class="nav-sec"><div class="nav-h">Go to</div>';
-  tabs.forEach(t=>{ h+=`<button class="nav-item${t.name===cur?' cur':''}" data-go="${t.name}">${escHtml(t.label)}</button>`; });
+  tabs.forEach(t=>{ h+=`<button class="nav-item${t.name===cur?' cur':''}" data-go="${escapeHtml(t.name)}">${escapeHtml(t.label)}</button>`; });
   h+='</div><div class="nav-sec"><div class="nav-h">Your data</div>'+
      '<button class="nav-item" data-act="backup">Download workspace backup</button>'+
      '<button class="nav-item" data-act="restore">Restore a backup…</button>'+
