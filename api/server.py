@@ -16,11 +16,13 @@ Intentional Arrangement SKOS — REST API (thin Flask wrapper over skoslib).
 Send RDF as the raw request body with a Content-Type (e.g. text/turtle), or add
 ?from=ttl. CORS is open so the browser app can call this directly.
 """
+import logging
 import os
 from flask import Flask, request, Response, jsonify
 import skoslib
 
 app = Flask(__name__)
+log = logging.getLogger("iaskos.api")
 
 
 @app.after_request
@@ -41,8 +43,11 @@ def validate():
         return Response(status=204)
     try:
         return jsonify(skoslib.validate_rdf(request.get_data(), _hint()))
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception:
+        # Log the detail server-side; never return exception/stack text to the
+        # client (code-scanning: py/stack-trace-exposure).
+        log.exception("validate failed")
+        return jsonify({"ok": False, "error": "Could not validate the submitted RDF. Check that it is well-formed and the format hint is correct."}), 400
 
 
 @app.route("/convert", methods=["POST", "OPTIONS"])
@@ -54,8 +59,11 @@ def convert():
         resp = Response(text, mimetype=mime)
         resp.headers["Content-Disposition"] = f'inline; filename="vocabulary.{ext}"'
         return resp
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception:
+        # Log the detail server-side; never return exception/stack text to the
+        # client (code-scanning: py/stack-trace-exposure).
+        log.exception("convert failed")
+        return jsonify({"ok": False, "error": "Could not convert the submitted RDF. Check that it is well-formed and the target format is supported."}), 400
 
 
 @app.route("/", methods=["GET"])
